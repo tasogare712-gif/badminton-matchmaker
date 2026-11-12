@@ -2,6 +2,7 @@ const STORAGE_KEY = 'badminton-matchmaker-v1';
 const defaultNames = ['佐藤','鈴木','高橋','田中','伊藤','渡辺','山本','中村'];
 const initialState = { players: defaultNames.map((name) => ({ id: crypto.randomUUID(), name })), courts: 2, round: 0, matches: [] };
 let state = loadState();
+let selectedPlayerForSwap = null;
 const $ = (selector) => document.querySelector(selector);
 function loadState() {
   try { const saved = JSON.parse(localStorage.getItem(STORAGE_KEY)); if (saved && Array.isArray(saved.players)) return { ...initialState, ...saved }; } catch {}
@@ -17,7 +18,7 @@ function renderPlayers() {
   $('#start-button').disabled = state.players.length < 4;
   $('#start-button').textContent = state.players.length < 4 ? `あと${4-state.players.length}人追加してください` : '🏸　対戦表を作成';
 }
-function openSetup() { $('#matches-view').classList.add('hidden'); $('#setup-view').classList.remove('hidden'); $('.nav-item[data-view="matches"]').classList.remove('active'); $('.nav-item[data-view="players"]').classList.add('active'); window.scrollTo({top:0,behavior:'smooth'}); }
+function openSetup() { selectedPlayerForSwap = null; $('#matches-view').classList.add('hidden'); $('#setup-view').classList.remove('hidden'); $('.nav-item[data-view="matches"]').classList.remove('active'); $('.nav-item[data-view="players"]').classList.add('active'); window.scrollTo({top:0,behavior:'smooth'}); }
 function openMatches() { $('#setup-view').classList.add('hidden'); $('#matches-view').classList.remove('hidden'); $('.nav-item[data-view="players"]').classList.remove('active'); $('.nav-item[data-view="settings"]').classList.remove('active'); $('.nav-item[data-view="matches"]').classList.add('active'); renderMatches(); window.scrollTo({top:0,behavior:'smooth'}); }
 function makeRound() {
   if (state.players.length < 4) { showNotice('対戦表を作るには参加者が4人以上必要です。'); return; }
@@ -46,18 +47,81 @@ function makeRound() {
   const current=state.round; state.matches.push(...rounds); state.round=current; state.round+=1; save(); openMatches();
 }
 function renderMatches() {
-  $('#round-number').textContent=String(state.round); $('#summary-courts').textContent=`${state.courts}面`; $('#summary-players').textContent=`${state.players.length}人`;
-  const data=state.matches[state.round-1]; if(!data){$('#match-list').innerHTML='<div class="empty-state">対戦表を作成すると、ここに試合が表示されます。</div>';$('#round-message').textContent='参加者とコート数を設定して対戦表を作成しましょう。';return;}
-  const names=new Map(state.players.map((p)=>[p.id,p.name])); const name=(id)=>escapeHTML(names.get(id)||'退会済み');
-  $('#round-message').textContent=`第${state.round}ラウンド｜${data.courts.length}試合`;
-  $('#match-list').innerHTML=data.courts.map((m)=>`<article class="match-card"><div class="match-card-head"><span class="court-name">コート ${m.court}</span><span class="match-tag">ダブルス</span></div><div class="versus-layout"><div class="team">${m.team1.map((id)=>`<span class="player-chip">${name(id)}</span>`).join('')}</div><span class="versus">VS</span><div class="team">${m.team2.map((id)=>`<span class="player-chip">${name(id)}</span>`).join('')}</div></div></article>`).join('') + (data.rest.length?`<div class="rest-card"><div class="rest-title">⏸ 今回のお休み · ${data.rest.length}人</div><div class="rest-names">${data.rest.map((id)=>`<span class="rest-chip">${name(id)}</span>`).join('')}</div></div>`:'');
+  $('#round-number').textContent = String(state.round);
+  $('#summary-courts').textContent = `${state.courts}面`;
+  $('#summary-players').textContent = `${state.players.length}人`;
+  const data = state.matches[state.round - 1];
+  if (!data) {
+    $('#match-list').innerHTML = '<div class="empty-state">対戦表を作成すると、ここに試合が表示されます。</div>';
+    $('#round-message').textContent = '参加者とコート数を設定して対戦表を作成しましょう。';
+    return;
+  }
+  const names = new Map(state.players.map((p) => [p.id, p.name]));
+  const name = (id) => escapeHTML(names.get(id) || '退会済み');
+  $('#round-message').setAttribute('aria-live', 'polite');
+  $('#round-message').textContent = `第${state.round}ラウンド｜${data.courts.length}試合｜同じ試合の名前を2人タップすると入れ替え`;
+  const playerButton = (id, matchIndex) => {
+    const selected = selectedPlayerForSwap?.matchIndex === matchIndex && selectedPlayerForSwap.playerId === id;
+    return `<button class="player-chip${selected ? ' selected' : ''}" type="button" data-player-id="${id}" data-match-index="${matchIndex}" aria-pressed="${selected}" aria-label="${name(id)}${selected ? '、入れ替え相手を選択中' : '、タップして選択'}" style="border:0;background:${selected ? '#dff4ff' : 'transparent'};border-radius:8px;padding:4px;width:100%;font:inherit;text-align:center;cursor:pointer">${name(id)}</button>`;
+  };
+  $('#match-list').innerHTML = data.courts.map((m, matchIndex) =>
+    `<article class="match-card"><div class="match-card-head"><span class="court-name">コート ${m.court}</span><span class="match-tag">ダブルス</span></div><div class="versus-layout"><div class="team">${m.team1.map((id) => playerButton(id, matchIndex)).join('')}</div><span class="versus">VS</span><div class="team">${m.team2.map((id) => playerButton(id, matchIndex)).join('')}</div></div></article>`
+  ).join('') + (data.rest.length ? `<div class="rest-card"><div class="rest-title">⏸ 今回のお休み · ${data.rest.length}人</div><div class="rest-names">${data.rest.map((id) => `<span class="rest-chip">${name(id)}</span>`).join('')}</div></div>` : '');
 }
+$('#match-list').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-player-id][data-match-index]');
+  if (!button) return;
+  const picked = { matchIndex: Number(button.dataset.matchIndex), playerId: button.dataset.playerId };
+  const match = state.matches[state.round - 1]?.courts[picked.matchIndex];
+  if (!match) return;
+
+  if (!selectedPlayerForSwap) {
+    selectedPlayerForSwap = picked;
+    renderMatches();
+    $('#round-message').textContent = `${state.players.find((p) => p.id === picked.playerId)?.name || '選手'}を選択しました。入れ替える相手を選んでください。`;
+    return;
+  }
+  if (selectedPlayerForSwap.matchIndex !== picked.matchIndex) {
+    selectedPlayerForSwap = picked;
+    renderMatches();
+    $('#round-message').textContent = '同じ試合の入れ替え相手を選んでください。';
+    return;
+  }
+  if (selectedPlayerForSwap.playerId === picked.playerId) {
+    selectedPlayerForSwap = null;
+    renderMatches();
+    return;
+  }
+
+  const firstName = state.players.find((p) => p.id === selectedPlayerForSwap.playerId)?.name || '選手';
+  const secondName = state.players.find((p) => p.id === picked.playerId)?.name || '選手';
+  const locate = (playerId) => {
+    for (const team of ['team1', 'team2']) {
+      const index = match[team].indexOf(playerId);
+      if (index !== -1) return { team, index };
+    }
+    return null;
+  };
+  const first = locate(selectedPlayerForSwap.playerId);
+  const second = locate(picked.playerId);
+  if (!first || !second) {
+    selectedPlayerForSwap = null;
+    renderMatches();
+    return;
+  }
+  [match[first.team][first.index], match[second.team][second.index]] =
+    [match[second.team][second.index], match[first.team][first.index]];
+  selectedPlayerForSwap = null;
+  save();
+  renderMatches();
+  $('#round-message').textContent = `${firstName}さんと${secondName}さんを入れ替えました。`;
+});
 $('#court-picker').addEventListener('click',(event)=>{const button=event.target.closest('[data-courts]');if(!button)return;state.courts=Number(button.dataset.courts);save();renderCourts();});
 $('#add-form').addEventListener('submit',(event)=>{event.preventDefault();const input=$('#new-player');const name=input.value.trim();if(!name)return;if(state.players.some((p)=>p.name.toLocaleLowerCase()===name.toLocaleLowerCase())){showNotice('同じ名前の参加者が登録されています。');return;}state.players.push({id:crypto.randomUUID(),name});input.value='';save();renderPlayers();});
 $('#profile-list').addEventListener('click',(event)=>{const button=event.target.closest('[data-remove]');if(!button)return;state.players=state.players.filter((p)=>p.id!==button.dataset.remove);save();renderPlayers();});
 $('#clear-players').addEventListener('click',()=>{if(!state.players.length)return;state.players=[];state.matches=[];state.round=0;save();renderPlayers();});
-$('#start-button').addEventListener('click',()=>{state.matches=[];state.round=0;makeRound();});
-$('#next-round').addEventListener('click',()=>{if(state.matches.length<=state.round)makeRound();else{state.round+=1;save();renderMatches();window.scrollTo({top:0,behavior:'smooth'});}});
+$('#start-button').addEventListener('click',()=>{selectedPlayerForSwap=null;state.matches=[];state.round=0;makeRound();});
+$('#next-round').addEventListener('click',()=>{selectedPlayerForSwap=null;if(state.matches.length<=state.round)makeRound();else{state.round+=1;save();renderMatches();window.scrollTo({top:0,behavior:'smooth'});}});
 $('#edit-setup').addEventListener('click',openSetup);
 document.querySelectorAll('.nav-item').forEach((button)=>button.addEventListener('click',()=>{if(button.dataset.view==='matches')openMatches();else if(button.dataset.view==='players')openSetup();else{const ok=confirm('参加者と対戦履歴をリセットしますか？');if(ok){state={...structuredClone(initialState),players:[]};save();renderPlayers();renderCourts();openSetup();showNotice('練習会をリセットしました。','リセット完了');}}}));
 renderCourts();renderPlayers();renderMatches();if(state.round>0)openMatches();
