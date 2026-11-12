@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#203d83" />
+    <meta name="description" content="バドミントン練習のダブルス対戦表をかんたん作成" />
+    <title>バドミントン対戦表</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar"><span class="brand-icon">🏸</span><h1>バドミントン対戦表</h1></header>
+    <main>
+      <section id="setup-view" class="view">
+        <div class="page-heading"><p class="eyebrow">PRACTICE MATCH MAKER</p><h2>練習会をセットアップ</h2><p>コート数と参加者を選んで、すぐに対戦を始めましょう。</p></div>
+        <section class="panel"><div class="section-title"><span class="step">1</span><div><h3>コート面数</h3><p>同時に使うコートを選択</p></div></div><div id="court-picker" class="court-picker" role="group" aria-label="コート面数"></div></section>
+        <section class="panel"><div class="section-title"><span class="step">2</span><div><h3>参加者</h3><p>4人以上で対戦表を作成できます</p></div></div>
+          <form id="add-form" class="add-form"><label class="sr-only" for="new-player">参加者の名前</label><input id="new-player" maxlength="20" placeholder="名前を入力" autocomplete="off" /><button class="button button-secondary" type="submit">＋ 追加</button></form>
+          <div id="profile-list" class="profile-list"></div><div class="list-footer"><span id="player-count"></span><button id="clear-players" class="text-button" type="button">全員削除</button></div>
+        </section>
+        <button id="start-button" class="button button-primary start-button" type="button">🏸　対戦表を作成</button>
+      </section>
+      <section id="matches-view" class="view hidden">
+        <div class="match-header"><div><p class="eyebrow">TODAY'S PRACTICE</p><h2>対戦表</h2></div><button id="edit-setup" class="button button-light" type="button">⚙ 設定</button></div>
+        <div class="summary-strip"><div><span class="summary-label">ラウンド</span><strong id="round-number">1</strong></div><div><span class="summary-label">コート</span><strong id="summary-courts">1面</strong></div><div><span class="summary-label">参加者</span><strong id="summary-players">0人</strong></div></div>
+        <div id="round-message" class="round-message"></div><div id="match-list" class="match-list"></div>
+        <button id="next-round" class="button button-primary next-button" type="button">次の対戦を作成 <span>→</span></button>
+        <p class="help-note">同じペアや対戦相手が続きにくいように組み合わせます。</p>
+      </section>
+    </main>
+    <nav class="bottom-nav" aria-label="メインメニュー"><button class="nav-item active" data-view="matches" type="button"><span>🏸</span>対戦表</button><button class="nav-item" data-view="players" type="button"><span>👥</span>参加者</button><button class="nav-item" data-view="settings" type="button"><span>⚙️</span>設定・リセット</button></nav>
+    <dialog id="notice-dialog"><form method="dialog"><div class="dialog-icon">🏸</div><h2 id="dialog-title">お知らせ</h2><p id="dialog-message"></p><button class="button button-primary" type="submit">OK</button></form></dialog>
+    <script src="./app.js"></script>
+  </body>
+</html>
+
