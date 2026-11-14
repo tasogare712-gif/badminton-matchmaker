@@ -18,7 +18,7 @@
         <section id="room-panel" class="panel hidden"><div class="section-title"><span class="step">1</span><div><h3>部屋に参加</h3><p>名前を入力して、新しい部屋を作るかコードで参加</p></div></div>
           <label class="field-label" for="room-player-name">あなたの名前</label><input id="room-player-name" class="room-input" maxlength="20" placeholder="例：佐藤" autocomplete="name" />
           <button id="create-room" class="button button-primary room-action" type="button">部屋を作る</button>
-          <div class="room-join"><input id="room-code" class="room-input" maxlength="6" placeholder="部屋コード" autocomplete="off" aria-label="部屋コード" /><button id="join-room" class="button button-secondary" type="button">部屋に入る</button></div>
+          <div class="room-join"><input id="room-code" class="room-input" maxlength="5" inputmode="numeric" placeholder="5桁の部屋コード" autocomplete="off" aria-label="5桁の部屋コード" /><button id="join-room" class="button button-secondary" type="button">部屋に入る</button></div>
           <div id="room-status" class="mode-status" aria-live="polite"></div><div id="active-room" class="active-room hidden">部屋コード <strong id="active-room-code"></strong><button id="copy-room-code" class="button button-light" type="button">コピー</button><button id="leave-room" class="text-button" type="button">退出</button></div>
         </section>
         <div id="practice-config">
