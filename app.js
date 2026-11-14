@@ -17,6 +17,16 @@ function loadState() {
   try { const saved = JSON.parse(localStorage.getItem(STORAGE_KEY)); if (saved && Array.isArray(saved.players)) return { ...initialState, ...saved }; } catch {}
   return structuredClone(initialState);
 }
+function sendRoom(message) {
+  if (!roomConnection?.open || !isRoomConnected || isRoomHost) return false;
+  try {
+    roomConnection.send(message);
+    return true;
+  } catch (error) {
+    console.error('部屋への送信に失敗しました。', error);
+    return false;
+  }
+}
 function save() {
   if (appMode === 'offline') { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); return; }
   const sharedState = { type: 'state-update', state: { courts: state.courts, round: state.round, matches: state.matches } };
@@ -90,8 +100,12 @@ function handleHostMessage(connection, message) {
     return;
   }
   if (message.type === 'state-update' && connection) {
-    state = { ...state, ...message.state, players: state.players };
-    broadcastRoom(); return;
+    if (!message.state || typeof message.state !== 'object' || !Array.isArray(message.state.matches)) return;
+    state = { ...state, courts: message.state.courts, round: message.state.round, matches: message.state.matches, players: state.players };
+    // ホストが受け取った確定状態を、送信者を含む全員へ返す
+    broadcastRoom();
+    $('#room-status').textContent = state.players.length + '人がこの部屋に参加しています。対戦表を全員へ共有しました。';
+    return;
   }
   if (message.type === 'request-action' && connection) {
     if (message.action === 'start') { selectedPlayerForSwap = null; state.matches = []; state.round = 0; makeRound(); }
