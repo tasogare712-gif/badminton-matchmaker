@@ -59,32 +59,35 @@ function renderMatches() {
   const names = new Map(state.players.map((p) => [p.id, p.name]));
   const name = (id) => escapeHTML(names.get(id) || '退会済み');
   $('#round-message').setAttribute('aria-live', 'polite');
-  $('#round-message').textContent = `第${state.round}ラウンド｜${data.courts.length}試合｜同じ試合の名前を2人タップすると入れ替え`;
+  $('#round-message').textContent = `第${state.round}ラウンド｜${data.courts.length}試合｜選手を2人タップして入れ替え（休憩者との交換もできます）`;
   const playerButton = (id, matchIndex) => {
-    const selected = selectedPlayerForSwap?.matchIndex === matchIndex && selectedPlayerForSwap.playerId === id;
-    return `<button class="player-chip${selected ? ' selected' : ''}" type="button" data-player-id="${id}" data-match-index="${matchIndex}" aria-pressed="${selected}" aria-label="${name(id)}${selected ? '、入れ替え相手を選択中' : '、タップして選択'}" style="border:0;background:${selected ? '#dff4ff' : 'transparent'};border-radius:8px;padding:4px;width:100%;font:inherit;text-align:center;cursor:pointer">${name(id)}</button>`;
+    const selected = selectedPlayerForSwap?.playerId === id;
+    return `<button class="player-chip${selected ? ' selected' : ''}" type="button" data-location="court" data-player-id="${id}" data-match-index="${matchIndex}" aria-pressed="${selected}" aria-label="${name(id)}${selected ? '、選択中' : '、タップして選択'}" style="border:0;background:${selected ? '#dff4ff' : 'transparent'};border-radius:8px;padding:4px;width:100%;font:inherit;text-align:center;cursor:pointer">${name(id)}</button>`;
+  };
+  const restButton = (id) => {
+    const selected = selectedPlayerForSwap?.playerId === id;
+    return `<button class="rest-chip rest-player${selected ? ' selected' : ''}" type="button" data-location="rest" data-player-id="${id}" aria-pressed="${selected}" aria-label="${name(id)}${selected ? '、選択中' : '、タップして選択'}" style="border:0;background:${selected ? '#dff4ff' : ''};font:inherit;cursor:pointer">${name(id)}</button>`;
   };
   $('#match-list').innerHTML = data.courts.map((m, matchIndex) =>
     `<article class="match-card"><div class="match-card-head"><span class="court-name">コート ${m.court}</span><span class="match-tag">ダブルス</span></div><div class="versus-layout"><div class="team">${m.team1.map((id) => playerButton(id, matchIndex)).join('')}</div><span class="versus">VS</span><div class="team">${m.team2.map((id) => playerButton(id, matchIndex)).join('')}</div></div></article>`
-  ).join('') + (data.rest.length ? `<div class="rest-card"><div class="rest-title">⏸ 今回のお休み · ${data.rest.length}人</div><div class="rest-names">${data.rest.map((id) => `<span class="rest-chip">${name(id)}</span>`).join('')}</div></div>` : '');
+  ).join('') + (data.rest.length ? `<div class="rest-card"><div class="rest-title">⏸ 今回のお休み · ${data.rest.length}人</div><div class="rest-names">${data.rest.map((id) => restButton(id)).join('')}</div></div>` : '');
 }
 $('#match-list').addEventListener('click', (event) => {
-  const button = event.target.closest('[data-player-id][data-match-index]');
+  const button = event.target.closest('[data-player-id][data-location]');
   if (!button) return;
-  const picked = { matchIndex: Number(button.dataset.matchIndex), playerId: button.dataset.playerId };
-  const match = state.matches[state.round - 1]?.courts[picked.matchIndex];
-  if (!match) return;
+  const picked = {
+    playerId: button.dataset.playerId,
+    locationType: button.dataset.location,
+    matchIndex: button.dataset.location === 'court' ? Number(button.dataset.matchIndex) : null
+  };
+  const round = state.matches[state.round - 1];
+  if (!round) return;
 
+  const playerName = (id) => state.players.find((p) => p.id === id)?.name || '選手';
   if (!selectedPlayerForSwap) {
     selectedPlayerForSwap = picked;
     renderMatches();
-    $('#round-message').textContent = `${state.players.find((p) => p.id === picked.playerId)?.name || '選手'}を選択しました。入れ替える相手を選んでください。`;
-    return;
-  }
-  if (selectedPlayerForSwap.matchIndex !== picked.matchIndex) {
-    selectedPlayerForSwap = picked;
-    renderMatches();
-    $('#round-message').textContent = '同じ試合の入れ替え相手を選んでください。';
+    $('#round-message').textContent = `${playerName(picked.playerId)}を選択しました。入れ替える相手を選んでください。`;
     return;
   }
   if (selectedPlayerForSwap.playerId === picked.playerId) {
@@ -92,25 +95,61 @@ $('#match-list').addEventListener('click', (event) => {
     renderMatches();
     return;
   }
-
-  const firstName = state.players.find((p) => p.id === selectedPlayerForSwap.playerId)?.name || '選手';
-  const secondName = state.players.find((p) => p.id === picked.playerId)?.name || '選手';
-  const locate = (playerId) => {
-    for (const team of ['team1', 'team2']) {
-      const index = match[team].indexOf(playerId);
-      if (index !== -1) return { team, index };
-    }
-    return null;
-  };
-  const first = locate(selectedPlayerForSwap.playerId);
-  const second = locate(picked.playerId);
-  if (!first || !second) {
-    selectedPlayerForSwap = null;
+  if (selectedPlayerForSwap.locationType === 'rest' && picked.locationType === 'rest') {
+    selectedPlayerForSwap = picked;
     renderMatches();
+    $('#round-message').textContent = `${playerName(picked.playerId)}を選択しました。コート上の相手を選んでください。`;
     return;
   }
-  [match[first.team][first.index], match[second.team][second.index]] =
-    [match[second.team][second.index], match[first.team][first.index]];
+
+  const firstName = playerName(selectedPlayerForSwap.playerId);
+  const secondName = playerName(picked.playerId);
+  if (selectedPlayerForSwap.locationType === 'rest' || picked.locationType === 'rest') {
+    const restingId = selectedPlayerForSwap.locationType === 'rest' ? selectedPlayerForSwap.playerId : picked.playerId;
+    const courtPlayer = selectedPlayerForSwap.locationType === 'court' ? selectedPlayerForSwap : picked;
+    const match = round.courts[courtPlayer.matchIndex];
+    const locate = (playerId) => {
+      for (const team of ['team1', 'team2']) {
+        const index = match?.[team].indexOf(playerId) ?? -1;
+        if (index !== -1) return { team, index };
+      }
+      return null;
+    };
+    const restIndex = round.rest.indexOf(restingId);
+    const courtPosition = locate(courtPlayer.playerId);
+    if (restIndex === -1 || !courtPosition) {
+      selectedPlayerForSwap = null;
+      renderMatches();
+      return;
+    }
+    match[courtPosition.team][courtPosition.index] = restingId;
+    round.rest[restIndex] = courtPlayer.playerId;
+  } else {
+    if (selectedPlayerForSwap.matchIndex !== picked.matchIndex) {
+      selectedPlayerForSwap = picked;
+      renderMatches();
+      $('#round-message').textContent = `同じ試合の選手か休憩中の人を選択してください。`;
+      return;
+    }
+    const match = round.courts[picked.matchIndex];
+    const locate = (playerId) => {
+      for (const team of ['team1', 'team2']) {
+        const index = match[team].indexOf(playerId);
+        if (index !== -1) return { team, index };
+      }
+      return null;
+    };
+    const first = locate(selectedPlayerForSwap.playerId);
+    const second = locate(picked.playerId);
+    if (!first || !second) {
+      selectedPlayerForSwap = null;
+      renderMatches();
+      return;
+    }
+    [match[first.team][first.index], match[second.team][second.index]] =
+      [match[second.team][second.index], match[first.team][first.index]];
+  }
+
   selectedPlayerForSwap = null;
   save();
   renderMatches();
