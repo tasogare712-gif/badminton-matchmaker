@@ -18,9 +18,11 @@ function loadState() {
   return structuredClone(initialState);
 }
 function save() {
-  if (appMode === 'offline') localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  else if (isRoomHost) broadcastRoom();
-  else sendRoom({ type: 'state-update', state: { courts: state.courts, round: state.round, matches: state.matches } });
+  if (appMode === 'offline') { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); return; }
+  const sharedState = { type: 'state-update', state: { courts: state.courts, round: state.round, matches: state.matches } };
+  if (isRoomHost) { broadcastRoom(); $('#room-status').textContent = '対戦表を部屋のメンバーへ共有しました。'; }
+  else if (!sendRoom(sharedState)) $('#room-status').textContent = '接続が切れているため変更を共有できません。部屋に再参加してください。';
+  else $('#room-status').textContent = '変更をホストに送信しました。';
 }
 function renderMode() {
   $('#offline-mode').classList.toggle('selected', appMode === 'offline');
@@ -111,7 +113,7 @@ async function connectRoom(action, name, code = '') {
     const PeerClass = await loadPeerJS();
     const normalizedName = name.trim();
     if (action === 'create-room') {
-      roomCode = Array.from(crypto.getRandomValues(new Uint8Array(6)), (byte) => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[byte % 32]).join('');
+      roomCode = String(crypto.getRandomValues(new Uint32Array(1))[0] % 100000).padStart(5, '0');
       isRoomHost = true;
       const peer = new PeerClass('badminton-' + roomCode); roomPeer = peer;
       peer.on('open', () => {
@@ -119,7 +121,7 @@ async function connectRoom(action, name, code = '') {
         state = { ...state, players: [{ id: peer.id, name: normalizedName }], round: 0, matches: [] };
         isRoomConnected = true;
         $('#room-code').value = roomCode;
-        $('#room-status').textContent = '部屋を作成しました。コードを参加者に共有してください。';
+        $('#room-status').textContent = '5桁の部屋コードを作成しました。参加者に共有してください。';
         renderMode(); renderPlayers(); renderCourts(); renderMatches();
       });
       peer.on('connection', setupRoomConnection);
@@ -132,7 +134,7 @@ async function connectRoom(action, name, code = '') {
       return;
     }
     const normalizedCode = code.trim().toUpperCase();
-    if (!/^[A-Z0-9]{6}$/.test(normalizedCode)) throw new Error('6文字の部屋コードを入力してください。');
+    if (!/^\d{5}$/.test(normalizedCode)) throw new Error('5桁の部屋コードを入力してください。');
     roomCode = normalizedCode; isRoomHost = false;
     const peer = new PeerClass(); roomPeer = peer;
     peer.on('open', () => {
@@ -324,7 +326,7 @@ $('#offline-mode').addEventListener('click',()=>setMode('offline'));
 $('#online-mode').addEventListener('click',()=>setMode('online'));
 $('#create-room').addEventListener('click',()=>connectRoom('create-room',$('#room-player-name').value));
 $('#join-room').addEventListener('click',()=>connectRoom('join-room',$('#room-player-name').value,$('#room-code').value));
-$('#room-code').addEventListener('input',(event)=>{event.target.value=event.target.value.replace(/[^a-z0-9]/gi,'').toUpperCase().slice(0,6);});
+$('#room-code').addEventListener('input',(event)=>{event.target.value=event.target.value.replace(/\D/g,'').slice(0,5);});
 $('#leave-room').addEventListener('click',()=>{if(isRoomHost)for(const connection of roomConnections.values())if(connection.open)connection.send({type:'room-ended'});resetRoomConnection();renderMode();$('#room-status').textContent='部屋から退出しました。';});
 $('#copy-room-code').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(roomCode);$('#room-status').textContent='部屋コードをコピーしました。';}catch{$('#room-status').textContent=`部屋コード「${roomCode}」を共有してください。`;}});
 renderMode();renderCourts();renderPlayers();renderMatches();if(state.round>0&&appMode==='offline')openMatches();
