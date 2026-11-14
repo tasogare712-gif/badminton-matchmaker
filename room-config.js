@@ -1,2 +1,3 @@
-window.ROOM_SERVER_URL = 'wss://badminton-matchmaker-room.onrender.com/ws';
+// The Worker endpoint is filled in after connecting this project to your Cloudflare account.
+window.ROOM_SERVER_ORIGIN = '';
 
