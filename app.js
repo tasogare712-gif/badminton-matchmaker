@@ -4,9 +4,13 @@ const defaultNames = ['佐藤','鈴木','高橋','田中','伊藤','渡辺','山
 const initialState = { players: defaultNames.map((name) => ({ id: crypto.randomUUID(), name })), courts: 2, round: 0, matches: [] };
 let state = loadState();
 let appMode = localStorage.getItem(MODE_KEY) || 'offline';
-let roomSocket = null;
+let roomPeer = null;
+let roomConnection = null;
+let roomConnections = new Map();
 let roomCode = null;
 let roomPlayerId = null;
+let isRoomHost = false;
+let isRoomConnected = false;
 let selectedPlayerForSwap = null;
 const $ = (selector) => document.querySelector(selector);
 function loadState() {
@@ -15,6 +19,7 @@ function loadState() {
 }
 function save() {
   if (appMode === 'offline') localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  else if (isRoomHost) broadcastRoom();
   else sendRoom({ type: 'state-update', state: { courts: state.courts, round: state.round, matches: state.matches } });
 }
 function renderMode() {
@@ -22,58 +27,139 @@ function renderMode() {
   $('#online-mode').classList.toggle('selected', appMode === 'online');
   $('#mode-status').textContent = appMode === 'offline' ? '臨時名簿と対戦履歴はこの端末のブラウザに保存されます。' : '名前を入力して部屋を作成、または部屋コードで参加します。';
   $('#room-panel').classList.toggle('hidden', appMode !== 'online');
-  $('#practice-config').classList.toggle('hidden', appMode === 'online' && !roomSocket);
+  $('#practice-config').classList.toggle('hidden', appMode === 'online' && !isRoomConnected);
   $('#add-form').classList.toggle('hidden', appMode === 'online');
   $('#participant-help').textContent = appMode === 'online' ? '部屋に入ったメンバーが自動で追加されます' : '4人以上で対戦表を作成できます';
-  $('#active-room').classList.toggle('hidden', !roomSocket);
+  $('#active-room').classList.toggle('hidden', !isRoomConnected);
+  $('#room-player-name').classList.toggle('hidden', isRoomConnected);
+  $('#create-room').classList.toggle('hidden', isRoomConnected);
+  $('.room-join').classList.toggle('hidden', isRoomConnected);
   if (roomCode) $('#active-room-code').textContent = roomCode;
+  $('#clear-players').classList.toggle('hidden', appMode === 'online' && !isRoomHost);
 }
-function sendRoom(message) {
-  if (!roomSocket || roomSocket.readyState !== WebSocket.OPEN) return false;
-  roomSocket.send(JSON.stringify(message));
-  return true;
-}
-function connectRoom(action, name, code = '') {
-  if (!window.ROOM_SERVER_URL) { showNotice('部屋サーバーの設定がありません。時間をおいて再度お試しください。'); return; }
-  if (!name.trim()) { $('#room-player-name').focus(); showNotice('お名前を入力してください。'); return; }
-  if (roomSocket) roomSocket.close();
-  $('#room-status').textContent = '部屋に接続しています…';
-  const socket = new WebSocket(window.ROOM_SERVER_URL);
-  roomSocket = socket;
-  let heartbeat;
-  socket.addEventListener('open', () => {
-    socket.send(JSON.stringify({ type: action, name: name.trim(), code: code.trim().toUpperCase() }));
-    heartbeat = setInterval(() => { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'heartbeat' })); }, 60000);
+function loadPeerJS() {
+  if (window.Peer) return Promise.resolve(window.Peer);
+  if (window.peerJSPromise) return window.peerJSPromise;
+  window.peerJSPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js';
+    script.onload = () => window.Peer ? resolve(window.Peer) : reject(new Error('PeerJSを読み込めませんでした。'));
+    script.onerror = () => reject(new Error('オンライン接続ライブラリを読み込めません。ネット接続を確認してください。'));
+    document.head.append(script);
   });
-  socket.addEventListener('message', (event) => {
-    let message; try { message = JSON.parse(event.data); } catch { return; }
-    if (message.type === 'error') { $('#room-status').textContent = message.message; socket.close(); return; }
-    if (message.type === 'room') {
-      roomCode = message.code; roomPlayerId = message.playerId;
-      state = { ...state, ...message.state, players: message.players };
-      $('#room-status').textContent = `${state.players.length}人がこの部屋に参加しています。`;
-      $('#room-code').value = roomCode; renderMode(); renderPlayers(); renderCourts(); renderMatches();
+  return window.peerJSPromise.catch((error) => { window.peerJSPromise = null; throw error; });
+}
+function roomSnapshot(type = 'room-update') {
+  return { type, code: roomCode, playerId: roomPlayerId, players: state.players, state: { courts: state.courts, round: state.round, matches: state.matches } };
+}
+function broadcastRoom(type = 'room-update') {
+  const snapshot = roomSnapshot(type);
+  for (const connection of roomConnections.values()) if (connection.open) connection.send(snapshot);
+  renderPlayers(); renderCourts(); renderMatches();
+}
+function acceptRoomSnapshot(message) {
+  if (message.code !== roomCode) return;
+  state = { ...state, ...message.state, players: message.players };
+  if (message.playerId) roomPlayerId = message.playerId;
+  isRoomConnected = true;
+  $('#room-status').textContent = state.players.length + '人がこの部屋に参加しています。';
+  $('#room-code').value = roomCode;
+  renderMode(); renderPlayers(); renderCourts(); renderMatches();
+}
+function setupRoomConnection(connection) {
+  roomConnections.set(connection.peer, connection);
+  connection.on('data', (message) => handleHostMessage(connection, message));
+  connection.on('close', () => {
+    roomConnections.delete(connection.peer);
+    if (isRoomHost) $('#room-status').textContent = state.players.length + '人がこの部屋に参加しています。';
+  });
+  connection.on('error', () => $('#room-status').textContent = '参加者との接続が切れました。');
+}
+function handleHostMessage(connection, message) {
+  if (!isRoomHost || !message || typeof message !== 'object') return;
+  if (message.type === 'join') {
+    const name = String(message.name || '').trim();
+    if (!name || [...name].length > 20) { connection?.send({ type: 'join-error', message: '名前を1〜20文字で入力してください。' }); return; }
+    if (state.players.some((player) => player.name.toLocaleLowerCase() === name.toLocaleLowerCase())) { connection?.send({ type: 'join-error', message: '同じ名前がすでに参加しています。別の名前を入力してください。' }); return; }
+    state.players.push({ id: connection.peer, name: name });
+    connection?.send(roomSnapshot('room'));
+    broadcastRoom();
+    $('#room-status').textContent = state.players.length + '人がこの部屋に参加しています。';
+    return;
+  }
+  if (message.type === 'state-update' && connection) {
+    state = { ...state, ...message.state, players: state.players };
+    broadcastRoom(); return;
+  }
+  if (message.type === 'request-action' && connection) {
+    if (message.action === 'start') { selectedPlayerForSwap = null; state.matches = []; state.round = 0; makeRound(); }
+    if (message.action === 'next') advanceRound();
+  }
+}
+function resetRoomConnection() {
+  roomConnection?.close(); roomConnection = null;
+  for (const connection of roomConnections.values()) connection.close();
+  roomConnections.clear();
+  roomPeer?.destroy(); roomPeer = null;
+  roomCode = null; roomPlayerId = null; isRoomHost = false; isRoomConnected = false;
+}
+async function connectRoom(action, name, code = '') {
+  if (!name.trim()) { $('#room-player-name').focus(); showNotice('お名前を入力してください。'); return; }
+  $('#room-status').textContent = '部屋に接続しています…';
+  resetRoomConnection();
+  try {
+    const PeerClass = await loadPeerJS();
+    const normalizedName = name.trim();
+    if (action === 'create-room') {
+      roomCode = Array.from(crypto.getRandomValues(new Uint8Array(6)), (byte) => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[byte % 32]).join('');
+      isRoomHost = true;
+      const peer = new PeerClass('badminton-' + roomCode); roomPeer = peer;
+      peer.on('open', () => {
+        roomPlayerId = peer.id;
+        state = { ...state, players: [{ id: peer.id, name: normalizedName }], round: 0, matches: [] };
+        isRoomConnected = true;
+        $('#room-code').value = roomCode;
+        $('#room-status').textContent = '部屋を作成しました。コードを参加者に共有してください。';
+        renderMode(); renderPlayers(); renderCourts(); renderMatches();
+      });
+      peer.on('connection', setupRoomConnection);
+      peer.on('error', (error) => {
+        if (!isRoomConnected) {
+          $('#room-status').textContent = error.type === 'unavailable-id' ? '部屋コードが重複しました。もう一度作成してください。' : '接続エラー: ' + error.type;
+          resetRoomConnection(); renderMode();
+        }
+      });
       return;
     }
-    if (message.type === 'room-update' && message.code === roomCode) {
-      state = { ...state, ...message.state, players: message.players };
-      $('#room-status').textContent = `${state.players.length}人がこの部屋に参加しています。`;
-      renderPlayers(); renderCourts(); renderMatches();
-    }
-  });
-  socket.addEventListener('close', () => {
-    clearInterval(heartbeat);
-    if (roomSocket !== socket) return;
-    roomSocket = null; roomPlayerId = null; roomCode = null;
-    renderMode();
-    if (appMode === 'online') $('#room-status').textContent = '接続が終了しました。部屋コードを入力して再参加してください。';
-  });
-  socket.addEventListener('error', () => { $('#room-status').textContent = '部屋サーバーに接続できません。起動中の場合は少し待ってから再試行してください。'; });
+    const normalizedCode = code.trim().toUpperCase();
+    if (!/^[A-Z0-9]{6}$/.test(normalizedCode)) throw new Error('6文字の部屋コードを入力してください。');
+    roomCode = normalizedCode; isRoomHost = false;
+    const peer = new PeerClass(); roomPeer = peer;
+    peer.on('open', () => {
+      const connection = peer.connect('badminton-' + roomCode, { reliable: true }); roomConnection = connection;
+      connection.on('open', () => connection.send({ type: 'join', name: normalizedName }));
+      connection.on('data', (message) => {
+        if (message?.type === 'room-ended') { $('#room-status').textContent = 'ホストが部屋を終了しました。'; resetRoomConnection(); renderMode(); return; }
+        if (message?.type === 'join-error') {
+          $('#room-status').textContent = message.message;
+          roomConnection?.close(); roomConnection = null; roomPeer?.destroy(); roomPeer = null; roomCode = null;
+          renderMode(); return;
+        }
+        if (message?.type === 'room' || message?.type === 'room-update') acceptRoomSnapshot(message);
+      });
+      connection.on('close', () => {
+        if (!isRoomConnected) return;
+        $('#room-status').textContent = 'ホストとの接続が切れました。部屋は終了しています。';
+        roomConnection = null; roomPeer?.destroy(); roomPeer = null; roomCode = null; roomPlayerId = null; isRoomConnected = false; renderMode();
+      });
+      connection.on('error', () => $('#room-status').textContent = '部屋に接続できません。コードとネットワークを確認してください。');
+    });
+    peer.on('error', (error) => { $('#room-status').textContent = '接続エラー: ' + error.type + '。部屋コードを確認してください。'; });
+  } catch (error) { $('#room-status').textContent = error.message; }
 }
 function setMode(mode) {
   if (appMode === mode) return;
-  if (roomSocket) { roomSocket.close(); roomSocket = null; }
-  roomCode = null; roomPlayerId = null;
+  resetRoomConnection();
   appMode = mode; localStorage.setItem(MODE_KEY, mode); renderMode();
   state.matches = []; state.round = 0; selectedPlayerForSwap = null;
   if (mode === 'offline') { state = loadState(); renderPlayers(); renderCourts(); renderMatches(); }
@@ -81,12 +167,12 @@ function setMode(mode) {
 }
 function escapeHTML(value) { return value.replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function showNotice(message, title = 'お知らせ') { $('#dialog-title').textContent = title; $('#dialog-message').textContent = message; $('#notice-dialog').showModal(); }
-function renderCourts() { $('#court-picker').innerHTML = [1,2,3,4].map((n) => `<button type="button" class="court-option ${state.courts === n ? 'selected' : ''}" aria-pressed="${state.courts === n}" data-courts="${n}">${n}面<span>${n === 1 ? 'ゆったり' : n === 4 ? 'フル稼働' : '同時進行'}</span></button>`).join(''); }
+function renderCourts() { $('#court-picker').innerHTML = [1,2,3,4].map((n) => '<button type="button" class="court-option ' + (state.courts === n ? 'selected' : '') + '" aria-pressed="' + (state.courts === n) + '" data-courts="' + n + '" ' + (appMode === 'online' && !isRoomHost ? 'disabled' : '') + '>' + n + '面<span>' + (n === 1 ? 'ゆったり' : n === 4 ? 'フル稼働' : '同時進行') + '</span></button>').join(''); }
 function renderPlayers() {
-  $('#profile-list').innerHTML = state.players.length ? state.players.map((p, index) => `<div class="profile-row"><span class="avatar" aria-label="参加者番号 ${index + 1}">${index + 1}</span><span class="profile-name">${escapeHTML(p.name)}</span><button class="remove-player" data-remove="${p.id}" aria-label="${escapeHTML(p.name)}を削除" type="button">×</button></div>`).join('') : '<div class="empty-state">参加者を追加してください</div>';
-  $('#player-count').textContent = `${state.players.length}人登録中`;
+  $('#profile-list').innerHTML = state.players.length ? state.players.map((p, index) => { const canRemove = appMode === 'offline' || (isRoomHost && p.id !== roomPlayerId); return '<div class="profile-row"><span class="avatar" aria-label="参加者番号 ' + (index + 1) + '">' + (index + 1) + '</span><span class="profile-name">' + escapeHTML(p.name) + '</span>' + (canRemove ? '<button class="remove-player" data-remove="' + p.id + '" aria-label="' + escapeHTML(p.name) + 'を削除" type="button">×</button>' : '') + '</div>'; }).join('') : '<div class="empty-state">参加者を追加してください</div>';
+  $('#player-count').textContent = state.players.length + '人登録中';
   $('#start-button').disabled = state.players.length < 4;
-  $('#start-button').textContent = state.players.length < 4 ? `あと${4-state.players.length}人追加してください` : '🏸　対戦表を作成';
+  $('#start-button').textContent = state.players.length < 4 ? 'あと' + (4-state.players.length) + '人追加してください' : '🏸　対戦表を作成';
 }
 function openSetup() { selectedPlayerForSwap = null; $('#matches-view').classList.add('hidden'); $('#setup-view').classList.remove('hidden'); $('.nav-item[data-view="matches"]').classList.remove('active'); $('.nav-item[data-view="players"]').classList.add('active'); window.scrollTo({top:0,behavior:'smooth'}); }
 function openMatches() { $('#setup-view').classList.add('hidden'); $('#matches-view').classList.remove('hidden'); $('.nav-item[data-view="players"]').classList.remove('active'); $('.nav-item[data-view="settings"]').classList.remove('active'); $('.nav-item[data-view="matches"]').classList.add('active'); renderMatches(); window.scrollTo({top:0,behavior:'smooth'}); }
@@ -225,12 +311,13 @@ $('#match-list').addEventListener('click', (event) => {
   renderMatches();
   $('#round-message').textContent = `${firstName}さんと${secondName}さんを入れ替えました。`;
 });
-$('#court-picker').addEventListener('click',(event)=>{const button=event.target.closest('[data-courts]');if(!button)return;state.courts=Number(button.dataset.courts);save();renderCourts();});
+$('#court-picker').addEventListener('click',(event)=>{const button=event.target.closest('[data-courts]');if(!button||(appMode==='online'&&!isRoomHost))return;state.courts=Number(button.dataset.courts);save();renderCourts();});
 $('#add-form').addEventListener('submit',(event)=>{event.preventDefault();const input=$('#new-player');const name=input.value.trim();if(!name)return;if(state.players.some((p)=>p.name.toLocaleLowerCase()===name.toLocaleLowerCase())){showNotice('同じ名前の参加者が登録されています。');return;}state.players.push({id:crypto.randomUUID(),name});input.value='';save();renderPlayers();});
-$('#profile-list').addEventListener('click',(event)=>{const button=event.target.closest('[data-remove]');if(!button)return;if(appMode==='online'){sendRoom({type:'remove-player',playerId:button.dataset.remove});return;}state.players=state.players.filter((p)=>p.id!==button.dataset.remove);save();renderPlayers();});
-$('#clear-players').addEventListener('click',()=>{if(!state.players.length)return;if(appMode==='online'){sendRoom({type:'clear-players'});return;}state.players=[];state.matches=[];state.round=0;save();renderPlayers();});
-$('#start-button').addEventListener('click',()=>{selectedPlayerForSwap=null;state.matches=[];state.round=0;makeRound();});
-$('#next-round').addEventListener('click',()=>{selectedPlayerForSwap=null;if(state.matches.length<=state.round)makeRound();else{state.round+=1;save();renderMatches();window.scrollTo({top:0,behavior:'smooth'});}});
+$('#profile-list').addEventListener('click',(event)=>{const button=event.target.closest('[data-remove]');if(!button)return;state.players=state.players.filter((p)=>p.id!==button.dataset.remove);if(appMode==='online'){state.matches=[];state.round=0;broadcastRoom();}else{save();renderPlayers();}});
+$('#clear-players').addEventListener('click',()=>{if(!state.players.length||appMode==='online')return;state.players=[];state.matches=[];state.round=0;save();renderPlayers();});
+$('#start-button').addEventListener('click',()=>{if(appMode==='online'&&!isRoomHost){sendRoom({type:'request-action',action:'start'});$('#room-status').textContent='ホストに対戦表の作成を依頼しました。';return;}selectedPlayerForSwap=null;state.matches=[];state.round=0;makeRound();});
+function advanceRound(){selectedPlayerForSwap=null;if(state.matches.length<=state.round)makeRound();else{state.round+=1;save();renderMatches();window.scrollTo({top:0,behavior:'smooth'});}}
+$('#next-round').addEventListener('click',()=>{if(appMode==='online'&&!isRoomHost){sendRoom({type:'request-action',action:'next'});$('#room-status').textContent='ホストに次の対戦を依頼しました。';return;}advanceRound();});
 $('#edit-setup').addEventListener('click',openSetup);
 document.querySelectorAll('.nav-item').forEach((button)=>button.addEventListener('click',()=>{if(button.dataset.view==='matches')openMatches();else if(button.dataset.view==='players')openSetup();else{const ok=confirm('参加者と対戦履歴をリセットしますか？');if(ok){state={...structuredClone(initialState),players:[]};save();renderPlayers();renderCourts();openSetup();showNotice('練習会をリセットしました。','リセット完了');}}}));
 $('#offline-mode').addEventListener('click',()=>setMode('offline'));
@@ -238,7 +325,7 @@ $('#online-mode').addEventListener('click',()=>setMode('online'));
 $('#create-room').addEventListener('click',()=>connectRoom('create-room',$('#room-player-name').value));
 $('#join-room').addEventListener('click',()=>connectRoom('join-room',$('#room-player-name').value,$('#room-code').value));
 $('#room-code').addEventListener('input',(event)=>{event.target.value=event.target.value.replace(/[^a-z0-9]/gi,'').toUpperCase().slice(0,6);});
-$('#leave-room').addEventListener('click',()=>{if(roomSocket){roomSocket.close();roomSocket=null;}roomPlayerId=null;roomCode=null;renderMode();$('#room-status').textContent='部屋から退出しました。';});
+$('#leave-room').addEventListener('click',()=>{if(isRoomHost)for(const connection of roomConnections.values())if(connection.open)connection.send({type:'room-ended'});resetRoomConnection();renderMode();$('#room-status').textContent='部屋から退出しました。';});
 $('#copy-room-code').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(roomCode);$('#room-status').textContent='部屋コードをコピーしました。';}catch{$('#room-status').textContent=`部屋コード「${roomCode}」を共有してください。`;}});
 renderMode();renderCourts();renderPlayers();renderMatches();if(state.round>0&&appMode==='offline')openMatches();
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('./service-worker.js').catch(()=>{});
