@@ -5,6 +5,7 @@ create table if not exists public.players (
 );
 
 alter table public.players enable row level security;
+grant select, insert, delete on table public.players to anon, authenticated;
 
 drop policy if exists "Anyone can view shared players" on public.players;
 drop policy if exists "Anyone can add shared players" on public.players;
