@@ -110,6 +110,8 @@ function handleHostMessage(connection, message) {
   if (message.type === 'request-action' && connection) {
     if (message.action === 'start') { selectedPlayerForSwap = null; state.matches = []; state.round = 0; makeRound(); }
     if (message.action === 'next') advanceRound();
+    if (message.action === 'previous') previousRound();
+    if (message.action === 'shuffle') reshuffleCurrentRound();
   }
 }
 function resetRoomConnection() {
@@ -223,6 +225,8 @@ function renderMatches() {
   $('#summary-courts').textContent = `${state.courts}面`;
   $('#summary-players').textContent = `${state.players.length}人`;
   const data = state.matches[state.round - 1];
+  $('#previous-round').disabled = state.round <= 1;
+  $('#reshuffle-round').disabled = !data;
   if (!data) {
     $('#match-list').innerHTML = '<div class="empty-state">対戦表を作成すると、ここに試合が表示されます。</div>';
     $('#round-message').textContent = '参加者とコート数を設定して対戦表を作成しましょう。';
@@ -333,7 +337,24 @@ $('#profile-list').addEventListener('click',(event)=>{const button=event.target.
 $('#clear-players').addEventListener('click',()=>{if(!state.players.length||appMode==='online')return;state.players=[];state.matches=[];state.round=0;save();renderPlayers();});
 $('#start-button').addEventListener('click',()=>{if(appMode==='online'&&!isRoomHost){sendRoom({type:'request-action',action:'start'});$('#room-status').textContent='ホストに対戦表の作成を依頼しました。';return;}selectedPlayerForSwap=null;state.matches=[];state.round=0;makeRound();});
 function advanceRound(){selectedPlayerForSwap=null;if(state.matches.length<=state.round)makeRound();else{state.round+=1;save();renderMatches();window.scrollTo({top:0,behavior:'smooth'});}}
-$('#next-round').addEventListener('click',()=>{if(appMode==='online'&&!isRoomHost){sendRoom({type:'request-action',action:'next'});$('#room-status').textContent='ホストに次の対戦を依頼しました。';return;}advanceRound();});
+function previousRound(){if(state.round<=1)return;selectedPlayerForSwap=null;state.round-=1;save();renderMatches();window.scrollTo({top:0,behavior:'smooth'});}
+function reshuffleCurrentRound(){
+  const round=state.matches[state.round-1];
+  if(!round||!round.courts.length)return;
+  const players=round.courts.flatMap((match)=>[...match.team1,...match.team2]).concat(round.rest);
+  for(let attempt=0;attempt<20;attempt++){
+    const shuffled=[...players];
+    for(let i=shuffled.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[shuffled[i],shuffled[j]]=[shuffled[j],shuffled[i]];}
+    let cursor=0;
+    const courts=round.courts.map((match)=>{const ids=shuffled.slice(cursor,cursor+4);cursor+=4;return{court:match.court,team1:[ids[0],ids[2]],team2:[ids[1],ids[3]]};});
+    const rest=shuffled.slice(cursor);
+    if(JSON.stringify({courts,rest})!==JSON.stringify({courts:round.courts,rest:round.rest})){round.courts=courts;round.rest=rest;save();renderMatches();return;}
+  }
+  showNotice('別の組み合わせを作れませんでした。もう一度お試しください。');
+}
+$('#next-round').addEventListener('click',()=>{if(appMode==='online'&&!isRoomHost){if(sendRoom({type:'request-action',action:'next'}))$('#room-status').textContent='ホストに次の対戦を依頼しました。';else $('#room-status').textContent='接続が切れているため操作を共有できません。';return;}advanceRound();});
+$('#previous-round').addEventListener('click',()=>{if(appMode==='online'&&!isRoomHost){if(sendRoom({type:'request-action',action:'previous'}))$('#room-status').textContent='ホストに前の対戦への移動を依頼しました。';else $('#room-status').textContent='接続が切れているため操作を共有できません。';return;}previousRound();});
+$('#reshuffle-round').addEventListener('click',()=>{if(appMode==='online'&&!isRoomHost){if(sendRoom({type:'request-action',action:'shuffle'}))$('#room-status').textContent='ホストに再シャッフルを依頼しました。';else $('#room-status').textContent='接続が切れているため操作を共有できません。';return;}reshuffleCurrentRound();});
 $('#edit-setup').addEventListener('click',openSetup);
 document.querySelectorAll('.nav-item').forEach((button)=>button.addEventListener('click',()=>{if(button.dataset.view==='matches')openMatches();else if(button.dataset.view==='players')openSetup();else{const ok=confirm('参加者と対戦履歴をリセットしますか？');if(ok){state={...structuredClone(initialState),players:[]};save();renderPlayers();renderCourts();openSetup();showNotice('練習会をリセットしました。','リセット完了');}}}));
 $('#offline-mode').addEventListener('click',()=>setMode('offline'));
