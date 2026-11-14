@@ -4,42 +4,80 @@ const defaultNames = ['佐藤','鈴木','高橋','田中','伊藤','渡辺','山
 const initialState = { players: defaultNames.map((name) => ({ id: crypto.randomUUID(), name })), courts: 2, round: 0, matches: [] };
 let state = loadState();
 let appMode = localStorage.getItem(MODE_KEY) || 'offline';
+let roomSocket = null;
+let roomCode = null;
+let roomPlayerId = null;
 let selectedPlayerForSwap = null;
 const $ = (selector) => document.querySelector(selector);
 function loadState() {
   try { const saved = JSON.parse(localStorage.getItem(STORAGE_KEY)); if (saved && Array.isArray(saved.players)) return { ...initialState, ...saved }; } catch {}
   return structuredClone(initialState);
 }
-function save() { if (appMode === 'offline') localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+function save() {
+  if (appMode === 'offline') localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  else sendRoom({ type: 'state-update', state: { courts: state.courts, round: state.round, matches: state.matches } });
+}
 function renderMode() {
   $('#offline-mode').classList.toggle('selected', appMode === 'offline');
   $('#online-mode').classList.toggle('selected', appMode === 'online');
-  $('#mode-status').textContent = appMode === 'offline' ? '臨時名簿と対戦履歴はこの端末のブラウザに保存されます。' : '固定メンバーの名簿を共有します。対戦履歴はこの端末に保存されます。';
+  $('#mode-status').textContent = appMode === 'offline' ? '臨時名簿と対戦履歴はこの端末のブラウザに保存されます。' : '名前を入力して部屋を作成、または部屋コードで参加します。';
+  $('#room-panel').classList.toggle('hidden', appMode !== 'online');
+  $('#practice-config').classList.toggle('hidden', appMode === 'online' && !roomSocket);
+  $('#add-form').classList.toggle('hidden', appMode === 'online');
+  $('#participant-help').textContent = appMode === 'online' ? '部屋に入ったメンバーが自動で追加されます' : '4人以上で対戦表を作成できます';
+  $('#active-room').classList.toggle('hidden', !roomSocket);
+  if (roomCode) $('#active-room-code').textContent = roomCode;
 }
-function hasSupabaseConfig() { return Boolean(window.SUPABASE_CONFIG?.url && window.SUPABASE_CONFIG?.anonKey && !window.SUPABASE_CONFIG.url.includes('YOUR_')) }
-async function sharedRequest(path, options = {}) {
-  if (!hasSupabaseConfig()) throw new Error('共有データベースの設定がまだ完了していません。');
-  const { url, anonKey } = window.SUPABASE_CONFIG;
-  const response = await fetch(`${url.replace(/\/$/, '')}/rest/v1/${path}`, { ...options, headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}`, 'Content-Type': 'application/json', ...options.headers } });
-  if (!response.ok) throw new Error(`共有名簿に接続できませんでした（${response.status}）。`);
-  return response.status === 204 ? null : response.json();
+function sendRoom(message) {
+  if (!roomSocket || roomSocket.readyState !== WebSocket.OPEN) return false;
+  roomSocket.send(JSON.stringify(message));
+  return true;
 }
-async function loadSharedPlayers() {
-  const players = await sharedRequest('players?select=id,name&order=created_at.asc');
-  state.players = players.map(({ id, name }) => ({ id, name }));
-  renderPlayers();
+function connectRoom(action, name, code = '') {
+  if (!window.ROOM_SERVER_URL) { showNotice('部屋サーバーの設定がありません。時間をおいて再度お試しください。'); return; }
+  if (!name.trim()) { $('#room-player-name').focus(); showNotice('お名前を入力してください。'); return; }
+  if (roomSocket) roomSocket.close();
+  $('#room-status').textContent = '部屋に接続しています…';
+  const socket = new WebSocket(window.ROOM_SERVER_URL);
+  roomSocket = socket;
+  let heartbeat;
+  socket.addEventListener('open', () => {
+    socket.send(JSON.stringify({ type: action, name: name.trim(), code: code.trim().toUpperCase() }));
+    heartbeat = setInterval(() => { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'heartbeat' })); }, 60000);
+  });
+  socket.addEventListener('message', (event) => {
+    let message; try { message = JSON.parse(event.data); } catch { return; }
+    if (message.type === 'error') { $('#room-status').textContent = message.message; socket.close(); return; }
+    if (message.type === 'room') {
+      roomCode = message.code; roomPlayerId = message.playerId;
+      state = { ...state, ...message.state, players: message.players };
+      $('#room-status').textContent = `${state.players.length}人がこの部屋に参加しています。`;
+      $('#room-code').value = roomCode; renderMode(); renderPlayers(); renderCourts(); renderMatches();
+      return;
+    }
+    if (message.type === 'room-update' && message.code === roomCode) {
+      state = { ...state, ...message.state, players: message.players };
+      $('#room-status').textContent = `${state.players.length}人がこの部屋に参加しています。`;
+      renderPlayers(); renderCourts(); renderMatches();
+    }
+  });
+  socket.addEventListener('close', () => {
+    clearInterval(heartbeat);
+    if (roomSocket !== socket) return;
+    roomSocket = null; roomPlayerId = null; roomCode = null;
+    renderMode();
+    if (appMode === 'online') $('#room-status').textContent = '接続が終了しました。部屋コードを入力して再参加してください。';
+  });
+  socket.addEventListener('error', () => { $('#room-status').textContent = '部屋サーバーに接続できません。起動中の場合は少し待ってから再試行してください。'; });
 }
-async function setMode(mode) {
+function setMode(mode) {
   if (appMode === mode) return;
-  if (mode === 'online' && !hasSupabaseConfig()) {
-    showNotice('共有版を有効にするには、Supabaseの無料プロジェクトを作成して設定が必要です。オフライン版はこのまま使えます。', '共有版の準備中');
-    return;
-  }
+  if (roomSocket) { roomSocket.close(); roomSocket = null; }
+  roomCode = null; roomPlayerId = null;
   appMode = mode; localStorage.setItem(MODE_KEY, mode); renderMode();
   state.matches = []; state.round = 0; selectedPlayerForSwap = null;
-  if (mode === 'offline') { state = loadState(); renderPlayers(); renderCourts(); renderMatches(); return; }
-  try { await loadSharedPlayers(); renderMatches(); }
-  catch (error) { appMode = 'offline'; localStorage.setItem(MODE_KEY, appMode); renderMode(); state = loadState(); renderPlayers(); showNotice(error.message, '接続できません'); }
+  if (mode === 'offline') { state = loadState(); renderPlayers(); renderCourts(); renderMatches(); }
+  else { state = { ...state, players: [], round: 0, matches: [] }; renderPlayers(); renderCourts(); renderMatches(); }
 }
 function escapeHTML(value) { return value.replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function showNotice(message, title = 'お知らせ') { $('#dialog-title').textContent = title; $('#dialog-message').textContent = message; $('#notice-dialog').showModal(); }
@@ -188,17 +226,21 @@ $('#match-list').addEventListener('click', (event) => {
   $('#round-message').textContent = `${firstName}さんと${secondName}さんを入れ替えました。`;
 });
 $('#court-picker').addEventListener('click',(event)=>{const button=event.target.closest('[data-courts]');if(!button)return;state.courts=Number(button.dataset.courts);save();renderCourts();});
-$('#add-form').addEventListener('submit',async(event)=>{event.preventDefault();const input=$('#new-player');const name=input.value.trim();if(!name)return;if(state.players.some((p)=>p.name.toLocaleLowerCase()===name.toLocaleLowerCase())){showNotice('同じ名前の参加者が登録されています。');return;}if(appMode==='online'){try{await sharedRequest('players',{method:'POST',headers:{Prefer:'return=minimal'},body:JSON.stringify({id:crypto.randomUUID(),name})});await loadSharedPlayers();input.value='';}catch(error){showNotice(error.message,'追加できません');}return;}state.players.push({id:crypto.randomUUID(),name});input.value='';save();renderPlayers();});
-$('#profile-list').addEventListener('click',async(event)=>{const button=event.target.closest('[data-remove]');if(!button)return;if(appMode==='online'){try{await sharedRequest(`players?id=eq.${encodeURIComponent(button.dataset.remove)}`,{method:'DELETE',headers:{Prefer:'return=minimal'}});await loadSharedPlayers();}catch(error){showNotice(error.message,'削除できません');}return;}state.players=state.players.filter((p)=>p.id!==button.dataset.remove);save();renderPlayers();});
-$('#clear-players').addEventListener('click',async()=>{if(!state.players.length)return;if(appMode==='online'){try{await sharedRequest('players?id=not.is.null',{method:'DELETE',headers:{Prefer:'return=minimal'}});state.matches=[];state.round=0;await loadSharedPlayers();renderMatches();}catch(error){showNotice(error.message,'削除できません');}return;}state.players=[];state.matches=[];state.round=0;save();renderPlayers();});
+$('#add-form').addEventListener('submit',(event)=>{event.preventDefault();const input=$('#new-player');const name=input.value.trim();if(!name)return;if(state.players.some((p)=>p.name.toLocaleLowerCase()===name.toLocaleLowerCase())){showNotice('同じ名前の参加者が登録されています。');return;}state.players.push({id:crypto.randomUUID(),name});input.value='';save();renderPlayers();});
+$('#profile-list').addEventListener('click',(event)=>{const button=event.target.closest('[data-remove]');if(!button)return;if(appMode==='online'){sendRoom({type:'remove-player',playerId:button.dataset.remove});return;}state.players=state.players.filter((p)=>p.id!==button.dataset.remove);save();renderPlayers();});
+$('#clear-players').addEventListener('click',()=>{if(!state.players.length)return;if(appMode==='online'){sendRoom({type:'clear-players'});return;}state.players=[];state.matches=[];state.round=0;save();renderPlayers();});
 $('#start-button').addEventListener('click',()=>{selectedPlayerForSwap=null;state.matches=[];state.round=0;makeRound();});
 $('#next-round').addEventListener('click',()=>{selectedPlayerForSwap=null;if(state.matches.length<=state.round)makeRound();else{state.round+=1;save();renderMatches();window.scrollTo({top:0,behavior:'smooth'});}});
 $('#edit-setup').addEventListener('click',openSetup);
 document.querySelectorAll('.nav-item').forEach((button)=>button.addEventListener('click',()=>{if(button.dataset.view==='matches')openMatches();else if(button.dataset.view==='players')openSetup();else{const ok=confirm('参加者と対戦履歴をリセットしますか？');if(ok){state={...structuredClone(initialState),players:[]};save();renderPlayers();renderCourts();openSetup();showNotice('練習会をリセットしました。','リセット完了');}}}));
 $('#offline-mode').addEventListener('click',()=>setMode('offline'));
 $('#online-mode').addEventListener('click',()=>setMode('online'));
+$('#create-room').addEventListener('click',()=>connectRoom('create-room',$('#room-player-name').value));
+$('#join-room').addEventListener('click',()=>connectRoom('join-room',$('#room-player-name').value,$('#room-code').value));
+$('#room-code').addEventListener('input',(event)=>{event.target.value=event.target.value.replace(/[^a-z0-9]/gi,'').toUpperCase().slice(0,6);});
+$('#leave-room').addEventListener('click',()=>{if(roomSocket){roomSocket.close();roomSocket=null;}roomPlayerId=null;roomCode=null;renderMode();$('#room-status').textContent='部屋から退出しました。';});
+$('#copy-room-code').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(roomCode);$('#room-status').textContent='部屋コードをコピーしました。';}catch{$('#room-status').textContent=`部屋コード「${roomCode}」を共有してください。`;}});
 renderMode();renderCourts();renderPlayers();renderMatches();if(state.round>0&&appMode==='offline')openMatches();
-if(appMode==='online'&&hasSupabaseConfig()) loadSharedPlayers().catch((error)=>{appMode='offline';localStorage.setItem(MODE_KEY,appMode);renderMode();state=loadState();renderPlayers();showNotice(error.message,'接続できません');});
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('./service-worker.js').catch(()=>{});
 
 
