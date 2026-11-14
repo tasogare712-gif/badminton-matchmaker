@@ -1,0 +1,11 @@
+{
+  "name": "バドミントン対戦表",
+  "short_name": "対戦表",
+  "lang": "ja",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f7fc",
+  "theme_color": "#203d83"
+}
+
