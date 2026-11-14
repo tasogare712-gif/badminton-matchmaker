@@ -1,14 +1,46 @@
 const STORAGE_KEY = 'badminton-matchmaker-v1';
+const MODE_KEY = 'badminton-matchmaker-mode-v1';
 const defaultNames = ['佐藤','鈴木','高橋','田中','伊藤','渡辺','山本','中村'];
 const initialState = { players: defaultNames.map((name) => ({ id: crypto.randomUUID(), name })), courts: 2, round: 0, matches: [] };
 let state = loadState();
+let appMode = localStorage.getItem(MODE_KEY) || 'offline';
 let selectedPlayerForSwap = null;
 const $ = (selector) => document.querySelector(selector);
 function loadState() {
   try { const saved = JSON.parse(localStorage.getItem(STORAGE_KEY)); if (saved && Array.isArray(saved.players)) return { ...initialState, ...saved }; } catch {}
   return structuredClone(initialState);
 }
-function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+function save() { if (appMode === 'offline') localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+function renderMode() {
+  $('#offline-mode').classList.toggle('selected', appMode === 'offline');
+  $('#online-mode').classList.toggle('selected', appMode === 'online');
+  $('#mode-status').textContent = appMode === 'offline' ? '臨時名簿と対戦履歴はこの端末のブラウザに保存されます。' : '固定メンバーの名簿を共有します。対戦履歴はこの端末に保存されます。';
+}
+function hasSupabaseConfig() { return Boolean(window.SUPABASE_CONFIG?.url && window.SUPABASE_CONFIG?.anonKey && !window.SUPABASE_CONFIG.url.includes('YOUR_')) }
+async function sharedRequest(path, options = {}) {
+  if (!hasSupabaseConfig()) throw new Error('共有データベースの設定がまだ完了していません。');
+  const { url, anonKey } = window.SUPABASE_CONFIG;
+  const response = await fetch(`${url.replace(/\/$/, '')}/rest/v1/${path}`, { ...options, headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}`, 'Content-Type': 'application/json', ...options.headers } });
+  if (!response.ok) throw new Error(`共有名簿に接続できませんでした（${response.status}）。`);
+  return response.status === 204 ? null : response.json();
+}
+async function loadSharedPlayers() {
+  const players = await sharedRequest('players?select=id,name&order=created_at.asc');
+  state.players = players.map(({ id, name }) => ({ id, name }));
+  renderPlayers();
+}
+async function setMode(mode) {
+  if (appMode === mode) return;
+  if (mode === 'online' && !hasSupabaseConfig()) {
+    showNotice('共有版を有効にするには、Supabaseの無料プロジェクトを作成して設定が必要です。オフライン版はこのまま使えます。', '共有版の準備中');
+    return;
+  }
+  appMode = mode; localStorage.setItem(MODE_KEY, mode); renderMode();
+  state.matches = []; state.round = 0; selectedPlayerForSwap = null;
+  if (mode === 'offline') { state = loadState(); renderPlayers(); renderCourts(); renderMatches(); return; }
+  try { await loadSharedPlayers(); renderMatches(); }
+  catch (error) { appMode = 'offline'; localStorage.setItem(MODE_KEY, appMode); renderMode(); state = loadState(); renderPlayers(); showNotice(error.message, '接続できません'); }
+}
 function escapeHTML(value) { return value.replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function showNotice(message, title = 'お知らせ') { $('#dialog-title').textContent = title; $('#dialog-message').textContent = message; $('#notice-dialog').showModal(); }
 function renderCourts() { $('#court-picker').innerHTML = [1,2,3,4].map((n) => `<button type="button" class="court-option ${state.courts === n ? 'selected' : ''}" aria-pressed="${state.courts === n}" data-courts="${n}">${n}面<span>${n === 1 ? 'ゆったり' : n === 4 ? 'フル稼働' : '同時進行'}</span></button>`).join(''); }
@@ -156,12 +188,17 @@ $('#match-list').addEventListener('click', (event) => {
   $('#round-message').textContent = `${firstName}さんと${secondName}さんを入れ替えました。`;
 });
 $('#court-picker').addEventListener('click',(event)=>{const button=event.target.closest('[data-courts]');if(!button)return;state.courts=Number(button.dataset.courts);save();renderCourts();});
-$('#add-form').addEventListener('submit',(event)=>{event.preventDefault();const input=$('#new-player');const name=input.value.trim();if(!name)return;if(state.players.some((p)=>p.name.toLocaleLowerCase()===name.toLocaleLowerCase())){showNotice('同じ名前の参加者が登録されています。');return;}state.players.push({id:crypto.randomUUID(),name});input.value='';save();renderPlayers();});
-$('#profile-list').addEventListener('click',(event)=>{const button=event.target.closest('[data-remove]');if(!button)return;state.players=state.players.filter((p)=>p.id!==button.dataset.remove);save();renderPlayers();});
-$('#clear-players').addEventListener('click',()=>{if(!state.players.length)return;state.players=[];state.matches=[];state.round=0;save();renderPlayers();});
+$('#add-form').addEventListener('submit',async(event)=>{event.preventDefault();const input=$('#new-player');const name=input.value.trim();if(!name)return;if(state.players.some((p)=>p.name.toLocaleLowerCase()===name.toLocaleLowerCase())){showNotice('同じ名前の参加者が登録されています。');return;}if(appMode==='online'){try{await sharedRequest('players',{method:'POST',headers:{Prefer:'return=minimal'},body:JSON.stringify({id:crypto.randomUUID(),name})});await loadSharedPlayers();input.value='';}catch(error){showNotice(error.message,'追加できません');}return;}state.players.push({id:crypto.randomUUID(),name});input.value='';save();renderPlayers();});
+$('#profile-list').addEventListener('click',async(event)=>{const button=event.target.closest('[data-remove]');if(!button)return;if(appMode==='online'){try{await sharedRequest(`players?id=eq.${encodeURIComponent(button.dataset.remove)}`,{method:'DELETE',headers:{Prefer:'return=minimal'}});await loadSharedPlayers();}catch(error){showNotice(error.message,'削除できません');}return;}state.players=state.players.filter((p)=>p.id!==button.dataset.remove);save();renderPlayers();});
+$('#clear-players').addEventListener('click',async()=>{if(!state.players.length)return;if(appMode==='online'){try{await sharedRequest('players?id=not.is.null',{method:'DELETE',headers:{Prefer:'return=minimal'}});state.matches=[];state.round=0;await loadSharedPlayers();renderMatches();}catch(error){showNotice(error.message,'削除できません');}return;}state.players=[];state.matches=[];state.round=0;save();renderPlayers();});
 $('#start-button').addEventListener('click',()=>{selectedPlayerForSwap=null;state.matches=[];state.round=0;makeRound();});
 $('#next-round').addEventListener('click',()=>{selectedPlayerForSwap=null;if(state.matches.length<=state.round)makeRound();else{state.round+=1;save();renderMatches();window.scrollTo({top:0,behavior:'smooth'});}});
 $('#edit-setup').addEventListener('click',openSetup);
 document.querySelectorAll('.nav-item').forEach((button)=>button.addEventListener('click',()=>{if(button.dataset.view==='matches')openMatches();else if(button.dataset.view==='players')openSetup();else{const ok=confirm('参加者と対戦履歴をリセットしますか？');if(ok){state={...structuredClone(initialState),players:[]};save();renderPlayers();renderCourts();openSetup();showNotice('練習会をリセットしました。','リセット完了');}}}));
-renderCourts();renderPlayers();renderMatches();if(state.round>0)openMatches();
+$('#offline-mode').addEventListener('click',()=>setMode('offline'));
+$('#online-mode').addEventListener('click',()=>setMode('online'));
+renderMode();renderCourts();renderPlayers();renderMatches();if(state.round>0&&appMode==='offline')openMatches();
+if(appMode==='online'&&hasSupabaseConfig()) loadSharedPlayers().catch((error)=>{appMode='offline';localStorage.setItem(MODE_KEY,appMode);renderMode();state=loadState();renderPlayers();showNotice(error.message,'接続できません');});
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('./service-worker.js').catch(()=>{});
+
 
