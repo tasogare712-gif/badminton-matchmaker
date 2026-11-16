@@ -201,7 +201,15 @@ function makeRound() {
   for (let r=0;r<totalRounds;r++) {
     const used = new Set(); const teams = []; const courts=[];
     const rotate = (r * Math.max(1, state.courts * 2)) % playerIds.length;
-    const order = [...playerIds.slice(rotate), ...playerIds.slice(0,rotate)];
+    const rotationOrder = [...playerIds.slice(rotate), ...playerIds.slice(0,rotate)];
+    const previousRound = rounds[r - 1] || state.matches[state.matches.length - 1];
+    const mustPlay = new Set(previousRound?.rest || []);
+    const playSlots = Math.min(state.courts, Math.floor(playerIds.length / 4)) * 4;
+    // 直前の休憩者を先に出場枠へ入れ、残りをローテーション順で補います
+    const order = [
+      ...rotationOrder.filter((id) => mustPlay.has(id)),
+      ...rotationOrder.filter((id) => !mustPlay.has(id))
+    ].slice(0, playSlots);
     for (let c=0;c<state.courts;c++) {
       const available = order.filter((id)=>!used.has(id)); if (available.length<4) break;
       let best=null; let bestScore=Infinity;
