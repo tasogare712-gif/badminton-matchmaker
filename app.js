@@ -192,8 +192,8 @@ function renderPlayers() {
   $('#start-button').disabled = state.players.length < 4;
   $('#start-button').textContent = state.players.length < 4 ? 'あと' + (4-state.players.length) + '人追加してください' : '🏸　対戦表を作成';
 }
-function openSetup() { selectedPlayerForSwap = null; $('#matches-view').classList.add('hidden'); $('#setup-view').classList.remove('hidden'); $('.nav-item[data-view="matches"]').classList.remove('active'); $('.nav-item[data-view="players"]').classList.add('active'); window.scrollTo({top:0,behavior:'smooth'}); }
-function openMatches() { $('#setup-view').classList.add('hidden'); $('#matches-view').classList.remove('hidden'); $('.nav-item[data-view="players"]').classList.remove('active'); $('.nav-item[data-view="settings"]').classList.remove('active'); $('.nav-item[data-view="matches"]').classList.add('active'); renderMatches(); window.scrollTo({top:0,behavior:'smooth'}); }
+function openSetup() { selectedPlayerForSwap = null; $('#matches-view').classList.add('hidden'); $('#score-view').classList.add('hidden'); $('#setup-view').classList.remove('hidden'); $('.nav-item[data-view="matches"]').classList.remove('active'); $('.nav-item[data-view="players"]').classList.add('active'); $('.nav-item[data-view="scores"]').classList.remove('active'); window.scrollTo({top:0,behavior:'smooth'}); }
+function openMatches() { $('#setup-view').classList.add('hidden'); $('#score-view').classList.add('hidden'); $('#matches-view').classList.remove('hidden'); $('.nav-item[data-view="players"]').classList.remove('active'); $('.nav-item[data-view="settings"]').classList.remove('active'); $('.nav-item[data-view="scores"]').classList.remove('active'); $('.nav-item[data-view="matches"]').classList.add('active'); renderMatches(); window.scrollTo({top:0,behavior:'smooth'}); }
 function makeRound() {
   if (state.players.length < 4) { showNotice('対戦表を作るには参加者が4人以上必要です。'); return; }
   const playerIds = state.players.map((p) => p.id); const rounds = [];
@@ -281,7 +281,7 @@ $('#score-list').addEventListener('change', (event) => {
   const match = state.matches[state.round - 1]?.courts[Number(input.dataset.scoreIndex)];
   if (!match) return;
   const value = input.value.trim();
-  if (value && (!/^\\d+$/.test(value) || Number(value) < 0)) { input.value = ''; return; }
+  if (value && (!/^\d+$/.test(value) || Number(value) < 0)) { input.value = ''; return; }
   match.score ||= {};
   match.score[input.dataset.scoreSide] = value;
   save();
