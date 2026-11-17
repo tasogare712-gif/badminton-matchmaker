@@ -7,3 +7,5 @@
 
 
 .round-actions{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:10px}.round-actions .button{min-height:45px;padding:0 8px;font-size:12px}.round-actions .button:disabled{opacity:.42;cursor:not-allowed}
+
+.score-list{display:grid;gap:12px}.score-card{background:#fff;border:1px solid var(--border);border-radius:15px;padding:14px 15px;box-shadow:var(--shadow)}.score-card-title{font-size:13px;font-weight:800;color:#2b4268;margin-bottom:10px}.score-row{display:grid;grid-template-columns:minmax(0,1fr) 68px;align-items:center;gap:12px}.score-team{font-size:13px;font-weight:600;color:#31415d;overflow-wrap:anywhere}.score-input{width:68px;height:46px;border:1px solid #cbd7e8;border-radius:11px;background:#f8fbff;color:var(--navy);font:inherit;font-size:20px;font-weight:800;text-align:center}.score-input:focus{outline:2px solid #0788cb55;border-color:var(--blue)}.score-vs{text-align:center;color:#a4afbf;font-size:10px;font-weight:800;padding:6px 0}
