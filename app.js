@@ -67,7 +67,7 @@ function roomSnapshot(type = 'room-update') {
 function broadcastRoom(type = 'room-update') {
   const snapshot = roomSnapshot(type);
   for (const connection of roomConnections.values()) if (connection.open) connection.send(snapshot);
-  renderPlayers(); renderCourts(); renderMatches();
+  renderPlayers(); renderCourts(); renderMatches(); renderScoreboard();
 }
 function acceptRoomSnapshot(message) {
   if (message.code !== roomCode) return;
@@ -76,7 +76,7 @@ function acceptRoomSnapshot(message) {
   isRoomConnected = true;
   $('#room-status').textContent = state.players.length + '人がこの部屋に参加しています。';
   $('#room-code').value = roomCode;
-  renderMode(); renderPlayers(); renderCourts(); renderMatches();
+  renderMode(); renderPlayers(); renderCourts(); renderMatches(); renderScoreboard();
 }
 function setupRoomConnection(connection) {
   roomConnections.set(connection.peer, connection);
@@ -256,6 +256,36 @@ function renderMatches() {
     `<article class="match-card"><div class="match-card-head"><span class="court-name">コート ${m.court}</span><span class="match-tag">ダブルス</span></div><div class="versus-layout"><div class="team">${m.team1.map((id) => playerButton(id, matchIndex)).join('')}</div><span class="versus">VS</span><div class="team">${m.team2.map((id) => playerButton(id, matchIndex)).join('')}</div></div></article>`
   ).join('') + (data.rest.length ? `<div class="rest-card"><div class="rest-title">⏸ 今回のお休み · ${data.rest.length}人</div><div class="rest-names">${data.rest.map((id) => restButton(id)).join('')}</div></div>` : '');
 }
+function renderScoreboard() {
+  const roundData = state.matches[state.round - 1];
+  $('#score-heading').textContent = state.round ? `第${state.round}ラウンド` : '対戦表はまだありません';
+  if (!roundData) {
+    $('#score-list').innerHTML = '<div class="empty-state">対戦表を作成すると、ここで得点を記録できます。</div>';
+    return;
+  }
+  const players = new Map(state.players.map((player) => [player.id, player.name]));
+  const playerNames = (ids) => ids.map((id) => escapeHTML(players.get(id) || '退会済み')).join('・');
+  $('#score-list').innerHTML = roundData.courts.map((match, index) => {
+    const score = match.score || {};
+    return `<article class="score-card">
+      <div class="score-card-title">コート ${match.court}</div>
+      <div class="score-row"><span class="score-team">${playerNames(match.team1)}</span><input type="number" min="0" step="1" inputmode="numeric" class="score-input" data-score-index="${index}" data-score-side="team1" value="${score.team1 ?? ''}" aria-label="コート ${match.court} ${playerNames(match.team1)} の得点"></div>
+      <div class="score-vs">VS</div>
+      <div class="score-row"><span class="score-team">${playerNames(match.team2)}</span><input type="number" min="0" step="1" inputmode="numeric" class="score-input" data-score-index="${index}" data-score-side="team2" value="${score.team2 ?? ''}" aria-label="コート ${match.court} ${playerNames(match.team2)} の得点"></div>
+    </article>`;
+  }).join('');
+}
+$('#score-list').addEventListener('change', (event) => {
+  const input = event.target.closest('[data-score-index][data-score-side]');
+  if (!input) return;
+  const match = state.matches[state.round - 1]?.courts[Number(input.dataset.scoreIndex)];
+  if (!match) return;
+  const value = input.value.trim();
+  if (value && (!/^\\d+$/.test(value) || Number(value) < 0)) { input.value = ''; return; }
+  match.score ||= {};
+  match.score[input.dataset.scoreSide] = value;
+  save();
+});
 $('#match-list').addEventListener('click', (event) => {
   const button = event.target.closest('[data-player-id][data-location]');
   if (!button) return;
@@ -364,7 +394,23 @@ $('#next-round').addEventListener('click',()=>{if(appMode==='online'&&!isRoomHos
 $('#previous-round').addEventListener('click',()=>{if(appMode==='online'&&!isRoomHost){if(sendRoom({type:'request-action',action:'previous'}))$('#room-status').textContent='ホストに前の対戦への移動を依頼しました。';else $('#room-status').textContent='接続が切れているため操作を共有できません。';return;}previousRound();});
 $('#reshuffle-round').addEventListener('click',()=>{if(appMode==='online'&&!isRoomHost){if(sendRoom({type:'request-action',action:'shuffle'}))$('#room-status').textContent='ホストに再シャッフルを依頼しました。';else $('#room-status').textContent='接続が切れているため操作を共有できません。';return;}reshuffleCurrentRound();});
 $('#edit-setup').addEventListener('click',openSetup);
-document.querySelectorAll('.nav-item').forEach((button)=>button.addEventListener('click',()=>{if(button.dataset.view==='matches')openMatches();else if(button.dataset.view==='players')openSetup();else{const ok=confirm('参加者と対戦履歴をリセットしますか？');if(ok){state={...structuredClone(initialState),players:[]};save();renderPlayers();renderCourts();openSetup();showNotice('練習会をリセットしました。','リセット完了');}}}));
+document.querySelectorAll('.nav-item').forEach((button)=>button.addEventListener('click',()=>{
+  if(button.dataset.view==='matches') openMatches();
+  else if(button.dataset.view==='players') openSetup();
+  else if(button.dataset.view==='scores') openScoreboard();
+  else {
+    const ok=confirm('参加者と対戦履歴をリセットしますか？');
+    if(ok){state={...structuredClone(initialState),players:[]};save();renderPlayers();renderCourts();openSetup();showNotice('練習会をリセットしました。','リセット完了');}
+  }
+}));
+function openScoreboard(){
+  $('#setup-view').classList.add('hidden');
+  $('#matches-view').classList.add('hidden');
+  $('#score-view').classList.remove('hidden');
+  document.querySelectorAll('.nav-item').forEach((item)=>item.classList.toggle('active',item.dataset.view==='scores'));
+  renderScoreboard();
+  window.scrollTo({top:0,behavior:'smooth'});
+}
 $('#offline-mode').addEventListener('click',()=>setMode('offline'));
 $('#online-mode').addEventListener('click',()=>setMode('online'));
 $('#create-room').addEventListener('click',()=>connectRoom('create-room',$('#room-player-name').value));
